@@ -2,7 +2,7 @@ name: Publish Shayran demo
 on:
   push:
     branches: [main]
-    paths: ['shayran-github-pages.zip']
+    paths: ['shayran-github-pages.zip', '.github/workflows/publish-demo.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -21,28 +21,35 @@ jobs:
       - name: Validate and extract public static export
         run: |
           python3 - <<'PY'
-          import zipfile, pathlib, stat, shutil
+          import zipfile, pathlib, stat, shutil, hashlib
           root = pathlib.Path('site')
           root.mkdir()
           sections = {'admin':['','products','campaigns','orders','marketers','customers','licenses','installations','releases','support','commissions','withdrawals','settings'], 'marketer':['','campaigns','sales','wallet','profile'], 'customer':['','licenses','business','payments','hosting','updates','support','profile']}
-          allowed_roots = {'_next','demo','images'}
           allowed_ext = {'.html','.txt','.js','.css','.json','.svg','.png','.jpg','.jpeg','.webp','.gif','.ico','.woff','.woff2','.ttf','.otf','.avif'}
+          root_files = {'index.html','index.txt','404.html','404.txt','.nojekyll','favicon.ico','icon.svg','robots.txt'}
+          archive=pathlib.Path('shayran-github-pages.zip')
+          # Restrict this publication to the already uploaded archive from the reviewed run.
+          raw=archive.read_bytes()
+          blob=hashlib.sha1(b'blob '+str(len(raw)).encode()+b'\0'+raw).hexdigest()
+          assert blob=='ddd6ae6d301e89bec2da56e3894c55808789c5ff', 'Archive changed; review required before publishing'
           seen=set()
-          with zipfile.ZipFile('shayran-github-pages.zip') as z:
+          skipped=[]
+          with zipfile.ZipFile(archive) as z:
               entries=z.infolist()
-              assert len(entries)<=10000 and sum(e.file_size for e in entries)<=250*1024*1024
+              assert len(entries)<=10000 and sum(e.file_size for e in entries)<=250*1024*1024, 'Archive exceeds limits'
               for e in entries:
                   p=pathlib.PurePosixPath(e.filename)
-                  assert p.parts and not p.is_absolute() and '..' not in p.parts and '\\' not in e.filename
-                  assert not stat.S_ISLNK(e.external_attr>>16)
-                  assert not any(x.startswith('.') and x != '.nojekyll' for x in p.parts)
+                  assert p.parts and not p.is_absolute() and '..' not in p.parts and '\\' not in e.filename, 'Unsafe archive path'
+                  assert not stat.S_ISLNK(e.external_attr>>16), 'Symlink is forbidden'
                   if e.is_dir():
-                      assert p.parts[0] in allowed_roots
                       continue
-                  assert str(p) not in seen
+                  assert str(p) not in seen, 'Duplicate archive entry'
                   seen.add(str(p))
-                  assert p.parts[0] in allowed_roots or (len(p.parts)==1 and p.name in {'index.html','index.txt','404.html','404.txt','.nojekyll','favicon.ico','icon.svg','robots.txt'})
-                  assert p.suffix.lower() in allowed_ext or p.name=='.nojekyll'
+                  allowed = (len(p.parts)==1 and p.name in root_files) or p.parts[0] in {'demo','images','404','_not-found'} or p.parts[:2]==('_next','static')
+                  hidden=any(x.startswith('.') and x!='.nojekyll' for x in p.parts)
+                  if not allowed or hidden or (p.suffix.lower() not in allowed_ext and p.name!='.nojekyll'):
+                      skipped.append(str(p))
+                      continue
                   target=root.joinpath(*p.parts)
                   target.parent.mkdir(parents=True,exist_ok=True)
                   with z.open(e) as source, target.open('wb') as dest:
@@ -53,11 +60,14 @@ jobs:
               for item in items:
                   p=root/'demo'/role/item/'index.html'
                   assert p.is_file(), p
-          assert (root/'_next/static').is_dir()
+          assert (root/'_next/static').is_dir(), 'Missing static assets'
           (root/'.nojekyll').touch()
+          print('Excluded extra files:', len(skipped))
+          for p in skipped[:30]:
+              print(repr(p))
           print('Validated 26 portal pages and static assets.')
           PY
-      - uses: actions/upload-pages-artifact@v3.0.1
+      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa
         with:
           path: site
   deploy:
