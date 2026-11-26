@@ -1,0 +1,75 @@
+name: Publish Shayran demo
+on:
+  push:
+    branches: [main]
+    paths: ['shayran-github-pages.zip']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: pages
+  cancel-in-progress: false
+jobs:
+  prepare:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Validate and extract public static export
+        run: |
+          python3 - <<'PY'
+          import zipfile, pathlib, stat, shutil
+          root = pathlib.Path('site')
+          root.mkdir()
+          sections = {'admin':['','products','campaigns','orders','marketers','customers','licenses','installations','releases','support','commissions','withdrawals','settings'], 'marketer':['','campaigns','sales','wallet','profile'], 'customer':['','licenses','business','payments','hosting','updates','support','profile']}
+          allowed_roots = {'_next','demo','images'}
+          allowed_ext = {'.html','.txt','.js','.css','.json','.svg','.png','.jpg','.jpeg','.webp','.gif','.ico','.woff','.woff2','.ttf','.otf','.avif'}
+          seen=set()
+          with zipfile.ZipFile('shayran-github-pages.zip') as z:
+              entries=z.infolist()
+              assert len(entries)<=10000 and sum(e.file_size for e in entries)<=250*1024*1024
+              for e in entries:
+                  p=pathlib.PurePosixPath(e.filename)
+                  assert p.parts and not p.is_absolute() and '..' not in p.parts and '\\' not in e.filename
+                  assert not stat.S_ISLNK(e.external_attr>>16)
+                  assert not any(x.startswith('.') and x != '.nojekyll' for x in p.parts)
+                  if e.is_dir():
+                      assert p.parts[0] in allowed_roots
+                      continue
+                  assert str(p) not in seen
+                  seen.add(str(p))
+                  assert p.parts[0] in allowed_roots or (len(p.parts)==1 and p.name in {'index.html','index.txt','404.html','404.txt','.nojekyll','favicon.ico','icon.svg','robots.txt'})
+                  assert p.suffix.lower() in allowed_ext or p.name=='.nojekyll'
+                  target=root.joinpath(*p.parts)
+                  target.parent.mkdir(parents=True,exist_ok=True)
+                  with z.open(e) as source, target.open('wb') as dest:
+                      shutil.copyfileobj(source,dest)
+          for path in ['index.html','demo/index.html']:
+              assert (root/path).is_file(), path
+          for role,items in sections.items():
+              for item in items:
+                  p=root/'demo'/role/item/'index.html'
+                  assert p.is_file(), p
+          assert (root/'_next/static').is_dir()
+          (root/'.nojekyll').touch()
+          print('Validated 26 portal pages and static assets.')
+          PY
+      - uses: actions/upload-pages-artifact@v3.0.1
+        with:
+          path: site
+  deploy:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4.0.5
